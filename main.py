@@ -1,10 +1,12 @@
-import nmap as nm
-import os
+import nmap
+import sys
+import shutil
 from google import genai
+
 vulnerabilities = []
 outpuvulns = []
-target_ip = input("Enter the target IP address: ")
 
+targIP = input("Enter the target IP address: ")
 
 def validate_ip(ip):
     parts = ip.split('.')
@@ -14,58 +16,125 @@ def validate_ip(ip):
         if not part.isdigit() or not 0 <= int(part) <= 255:
             return False
     return True
-while not validate_ip(target_ip):
+
+while not validate_ip(targIP):
     print("Invalid IP address. Please enter a valid IP address.")
-    target_ip = input("Enter the target IP address: ")
+    targIP = input("Enter the target IP address: ")
 
-#Scanning the target IP for open ports and services, banner grabbing, service identification, network mapping, and OS detection, network discovery, and enumeration using Nmap
-scanner = nm.PortScanner()
-print(f"Scanning {target_ip} for open ports and services...")
-scanner.scan(target_ip, arguments='-sS -sV -sC -O --top-ports 1000 -T4')
-print(f"Scan completed for {target_ip}. Extracting vulnerabilities...")
-for host in scanner.all_hosts():
-    for proto in scanner[host].all_protocols():
-        ports = scanner[host][proto].keys()
-        for port in ports:
-            service = scanner[host][proto][port]['name']
-            banner = scanner[host][proto][port]['product'] + " " + scanner[host][proto][port]['version']
-            vulnerabilities.append({
-                "host": host,
-                "port": port,
-                "service": service,
-                "banner": banner
-            })
+if not shutil.which("nmap"):
+    print("Error: Nmap is not installed or not in PATH.")
+    sys.exit(1)
 
+portscanner = nmap.PortScanner()
+vulnscanner = nmap.PortScanner()
 
-#Vulnerability assessment using Google GenAI
-print(f"Assessing vulnerabilities for {target_ip} using GenAI...")
-genai_client = genai.Client()
-for vuln in vulnerabilities:
-    prompt = f"You are a cybersecurity expert. Identify vulnerabilities for the following service:\nService: {vuln['service']}\nBanner: {vuln['banner']}"
-    response = genai_client.generate_content(prompt)
+openPorts = []
+
+print(f"Scanning {targIP} for open ports...")
+
+try:
+    portscanner.scan(targIP, arguments='-sS --top-ports 1000 -T4')
+
+    for host in portscanner.all_hosts():
+        for proto in portscanner[host].all_protocols():
+            for port in portscanner[host][proto].keys():
+                if portscanner[host][proto][port]['state'] == 'open':
+                    openPorts.append(str(port))
+
+    if not openPorts:
+        print("No open ports found.")
+        sys.exit(0)
+
+    port = ",".join(openPorts)
+
+    print(f"Open ports found: {port}")
+    print("Starting targeted vulnerability scan...")
+
+    vulnscanner.scan(
+        targIP,
+        arguments=f'-sV --script=vuln --script-timeout 15s -p {port} -T4'
+    )
+
+    for host in vulnscanner.all_hosts():
+        for proto in vulnscanner[host].all_protocols():
+            for port in vulnscanner[host][proto].keys():
+                data = vulnscanner[host][proto][port]
+
+                service = data.get('name', '')
+                product = data.get('product', '')
+                version = data.get('version', '')
+
+                banner = f"{product} {version}".strip()
+
+                vulnerabilities.append({
+                    "host": host,
+                    "port": port,
+                    "service": service,
+                    "banner": banner,
+                    "scripts": data.get('script', {})
+                })
+
+except Exception as e:
+    print(f"Scan failed: {e}")
+    sys.exit(1)
+
+print("Scan complete.")
+print(f"Assessing vulnerabilities for {targIP} using GenAI...")
+
+try:
+    genai_client = genai.Client()
+
+    combined_prompt = ""
+    for vuln in vulnerabilities:
+        combined_prompt += (
+            f"Host: {vuln['host']}\n"
+            f"Port: {vuln['port']}\n"
+            f"Service: {vuln['service']}\n"
+            f"Banner: {vuln['banner']}\n"
+            f"Nmap Script Output: {vuln['scripts']}\n\n"
+        )
+
+    prompt = (
+        "You are a cybersecurity expert. Identify known vulnerabilities, "
+        "possible CVEs, risk level, and remediation steps for the following services:\n\n"
+        + combined_prompt
+    )
+
+    response = genai_client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt
+    )
+
+    ai_output = response.text
+
     outpuvulns.append({
-        "host": vuln['host'],
-        "port": vuln['port'],
-        "service": vuln['service'],
-        "vulnerabilities": response.text
+        "host": targIP,
+        "analysis": ai_output
     })
 
-#Reporting
-print(f"Vulnerability assessment completed for {target_ip}. Generating report...")
+except Exception as e:
+    print(f"GenAI analysis failed: {e}")
+    outpuvulns.append({
+        "host": targIP,
+        "analysis": "AI analysis unavailable."
+    })
+
+
+print(f"Vulnerability assessment completed for {targIP}. Generating report...")
+
 for vuln in outpuvulns:
     print(f"Host: {vuln['host']}")
-    print(f"Port: {vuln['port']}")
-    print(f"Service: {vuln['service']}")
-    print(f"Vulnerabilities: {vuln['vulnerabilities']}\n")
+    print(f"Vulnerabilities:\n{vuln['analysis']}\n")
 
 print("Report generated successfully. Saving to vulnerability_report.txt...")
-#Writing to file 
-with open("vulnerability_report.txt", "w") as report_file:
-    for vuln in outpuvulns:
-        report_file.write(f"Host: {vuln['host']}\n")
-        report_file.write(f"Port: {vuln['port']}\n")
-        report_file.write(f"Service: {vuln['service']}\n")
-        report_file.write(f"Vulnerabilities: {vuln['vulnerabilities']}\n\n")
-print("Report saved successfully as vulnerability_report.txt.")
 
+try:
+    with open("vulnerability_report.txt", "w") as report_file:
+        for vuln in outpuvulns:
+            report_file.write(f"Host: {vuln['host']}\n")
+            report_file.write(f"Vulnerabilities:\n{vuln['analysis']}\n\n")
 
+    print("Report saved successfully as vulnerability_report.txt.")
+
+except Exception as e:
+    print(f"Failed to save report: {e}")
