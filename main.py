@@ -2,10 +2,12 @@ import nmap
 import sys
 import shutil
 from google import genai
+import time
 
 vulnerabilities = []
 outpuvulns = []
 
+genai_api_key = input("Enter your GenAI API key: ")
 targIP = input("Enter the target IP address: ")
 
 def validate_ip(ip):
@@ -23,42 +25,20 @@ while not validate_ip(targIP):
 
 if not shutil.which("nmap"):
     print("Error: Nmap is not installed or not in PATH.")
+    time.sleep(4)
     sys.exit(1)
 
-portscanner = nmap.PortScanner()
-vulnscanner = nmap.PortScanner()
+scanner = nmap.PortScanner()
 
-openPorts = []
-
-print(f"Scanning {targIP} for open ports...")
+print(f"Scanning {targIP} for open ports and vulnerabilities...")
 
 try:
-    portscanner.scan(targIP, arguments='-sS --top-ports 1000 -T4')
+    scanner.scan(targIP, arguments='-sV -O -T5 --version-light --osscan-limit --top-ports 1000')
 
-    for host in portscanner.all_hosts():
-        for proto in portscanner[host].all_protocols():
-            for port in portscanner[host][proto].keys():
-                if portscanner[host][proto][port]['state'] == 'open':
-                    openPorts.append(str(port))
-
-    if not openPorts:
-        print("No open ports found.")
-        sys.exit(0)
-
-    port = ",".join(openPorts)
-
-    print(f"Open ports found: {port}")
-    print("Starting targeted vulnerability scan...")
-
-    vulnscanner.scan(
-        targIP,
-        arguments=f'-sV --script=vuln --script-timeout 15s -p {port} -T4'
-    )
-
-    for host in vulnscanner.all_hosts():
-        for proto in vulnscanner[host].all_protocols():
-            for port in vulnscanner[host][proto].keys():
-                data = vulnscanner[host][proto][port]
+    for host in scanner.all_hosts():
+        for proto in scanner[host].all_protocols():
+            for port in scanner[host][proto].keys():
+                data = scanner[host][proto][port]
 
                 service = data.get('name', '')
                 product = data.get('product', '')
@@ -76,13 +56,15 @@ try:
 
 except Exception as e:
     print(f"Scan failed: {e}")
+    time.sleep(4)
     sys.exit(1)
 
 print("Scan complete.")
 print(f"Assessing vulnerabilities for {targIP} using GenAI...")
+print(f"Assessing vulnerabilities for {targIP} using GenAI...")
 
 try:
-    genai_client = genai.Client()
+    genai_client = genai.Client(api_key=genai_api_key)
 
     combined_prompt = ""
     for vuln in vulnerabilities:
@@ -119,7 +101,6 @@ except Exception as e:
         "analysis": "AI analysis unavailable."
     })
 
-
 print(f"Vulnerability assessment completed for {targIP}. Generating report...")
 
 for vuln in outpuvulns:
@@ -129,10 +110,10 @@ for vuln in outpuvulns:
 print("Report generated successfully. Saving to vulnerability_report.txt...")
 
 try:
-    with open("vulnerability_report.txt", "w") as report_file:
+    with open("vulnerability_report.txt", "w") as report:
         for vuln in outpuvulns:
-            report_file.write(f"Host: {vuln['host']}\n")
-            report_file.write(f"Vulnerabilities:\n{vuln['analysis']}\n\n")
+            report.write(f"Host: {vuln['host']}\n")
+            report.write(f"Vulnerabilities:\n{vuln['analysis']}\n\n")
 
     print("Report saved successfully as vulnerability_report.txt.")
 
